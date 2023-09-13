@@ -306,6 +306,8 @@ pub(crate) struct PeerSync<B: BlockT> {
 	/// The state of syncing this peer is in for us, generally categories
 	/// into `Available` or "busy" with something as defined by `PeerSyncState`.
 	pub state: PeerSyncState<B>,
+	/// Whether peer is synced.
+	pub is_synced: bool,
 }
 
 impl<B: BlockT> PeerSync<B> {
@@ -435,6 +437,9 @@ where
 			} else {
 				SyncState::Idle
 			}
+		} else if self.peers.len() > 0 {
+			// There are known peers, but none of them are synced
+			SyncState::Pending
 		} else {
 			SyncState::Idle
 		};
@@ -474,8 +479,14 @@ where
 	}
 
 	/// Notify syncing state machine that a new sync peer has connected.
-	pub fn add_peer(&mut self, peer_id: PeerId, best_hash: B::Hash, best_number: NumberFor<B>) {
-		match self.add_peer_inner(peer_id, best_hash, best_number) {
+	pub fn add_peer(
+		&mut self,
+		peer_id: PeerId,
+		best_hash: B::Hash,
+		best_number: NumberFor<B>,
+		is_synced: bool,
+	) {
+		match self.add_peer_inner(peer_id, best_hash, best_number, is_synced) {
 			Ok(Some(request)) =>
 				self.actions.push(ChainSyncAction::SendBlockRequest { peer_id, request }),
 			Ok(None) => {},
@@ -489,6 +500,7 @@ where
 		peer_id: PeerId,
 		best_hash: B::Hash,
 		best_number: NumberFor<B>,
+		is_synced: bool,
 	) -> Result<Option<BlockRequest<B>>, BadPeer> {
 		// There is nothing sync can get from the node that has no blockchain data.
 		match self.block_status(&best_hash) {
@@ -530,6 +542,7 @@ where
 							best_hash,
 							best_number,
 							state: PeerSyncState::Available,
+							is_synced,
 						},
 					);
 					return Ok(None)
@@ -573,6 +586,7 @@ where
 						best_hash,
 						best_number,
 						state,
+						is_synced,
 					},
 				);
 
@@ -593,6 +607,7 @@ where
 						best_hash,
 						best_number,
 						state: PeerSyncState::Available,
+						is_synced,
 					},
 				);
 				self.allowed_requests.add(&peer_id);
@@ -1053,9 +1068,10 @@ where
 		is_best: bool,
 		peer_id: PeerId,
 		announce: &BlockAnnounce<B::Header>,
-	) -> Option<(B::Hash, NumberFor<B>)> {
+	) -> Option<(B::Hash, NumberFor<B>, bool)> {
 		let number = *announce.header.number();
 		let hash = announce.header.hash();
+		let is_synced = announce.is_synced;
 		let parent_status =
 			self.block_status(announce.header.parent_hash()).unwrap_or(BlockStatus::Unknown);
 		let known_parent = parent_status != BlockStatus::Unknown;
@@ -1066,7 +1082,7 @@ where
 			peer
 		} else {
 			error!(target: LOG_TARGET, "💔 Called `on_validated_block_announce` with a bad peer ID");
-			return Some((hash, number))
+			return Some((hash, number, is_synced))
 		};
 
 		if let PeerSyncState::AncestorSearch { .. } = peer.state {
@@ -1078,8 +1094,12 @@ where
 			// update their best block
 			peer.best_number = number;
 			peer.best_hash = hash;
+			// Do not update synced status back to not synced. Announcements only happen
+			// occasionally and it is unlikely that actively connected peer will become not synced
+			// after being synced previously anyway.
+			peer.is_synced = peer.is_synced || is_synced;
 
-			(hash, number)
+			(hash, number, peer.is_synced)
 		});
 
 		// If the announced block is the best they have and is not ahead of us, our common number
@@ -1190,7 +1210,11 @@ where
 
 	/// Returns the median seen block number.
 	fn median_seen(&self) -> Option<NumberFor<B>> {
-		let mut best_seens = self.peers.values().map(|p| p.best_number).collect::<Vec<_>>();
+		let mut best_seens = self
+			.peers
+			.values()
+			.filter_map(|p| p.is_synced.then_some(p.best_number))
+			.collect::<Vec<_>>();
 
 		if best_seens.is_empty() {
 			None
@@ -1337,7 +1361,8 @@ where
 			}
 
 			// handle peers that were in other states.
-			let action = match self.add_peer_inner(peer_id, p.best_hash, p.best_number) {
+			let action = match self.add_peer_inner(peer_id, p.best_hash, p.best_number, p.is_synced)
+			{
 				// since the request is not a justification, remove it from pending responses
 				Ok(None) => ChainSyncAction::CancelBlockRequest { peer_id },
 				// update the request if the new one is available

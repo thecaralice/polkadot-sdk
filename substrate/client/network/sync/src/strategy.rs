@@ -139,14 +139,20 @@ where
 	}
 
 	/// Notify that a new peer has connected.
-	pub fn add_peer(&mut self, peer_id: PeerId, best_hash: B::Hash, best_number: NumberFor<B>) {
+	pub fn add_peer(
+		&mut self,
+		peer_id: PeerId,
+		best_hash: B::Hash,
+		best_number: NumberFor<B>,
+		is_synced: bool,
+	) {
 		match self {
 			SyncingStrategy::WarpSyncStrategy(strategy) =>
 				strategy.add_peer(peer_id, best_hash, best_number),
 			SyncingStrategy::StateSyncStrategy(strategy) =>
 				strategy.add_peer(peer_id, best_hash, best_number),
 			SyncingStrategy::ChainSyncStrategy(strategy) =>
-				strategy.add_peer(peer_id, best_hash, best_number),
+				strategy.add_peer(peer_id, best_hash, best_number, is_synced),
 		}
 	}
 
@@ -167,7 +173,7 @@ where
 		is_best: bool,
 		peer_id: PeerId,
 		announce: &BlockAnnounce<B::Header>,
-	) -> Option<(B::Hash, NumberFor<B>)> {
+	) -> Option<(B::Hash, NumberFor<B>, bool)> {
 		match self {
 			SyncingStrategy::WarpSyncStrategy(strategy) =>
 				strategy.on_validated_block_announce(is_best, peer_id, announce),
@@ -404,7 +410,7 @@ where
 		&mut self,
 		config: SyncingConfig,
 		client: Arc<Client>,
-		connected_peers: impl Iterator<Item = (PeerId, B::Hash, NumberFor<B>)>,
+		connected_peers: impl Iterator<Item = (PeerId, B::Hash, NumberFor<B>, bool)>,
 	) -> Result<(), ClientError> {
 		match self {
 			Self::WarpSyncStrategy(warp_sync) => {
@@ -421,8 +427,11 @@ where
 							res.target_justifications,
 							// skip proofs, only set to `true` in `FastUnsafe` sync mode
 							false,
-							connected_peers
-								.map(|(peer_id, _best_hash, best_number)| (peer_id, best_number)),
+							connected_peers.map(
+								|(peer_id, _best_hash, best_number, _is_synced)| {
+									(peer_id, best_number)
+								},
+							),
 						);
 
 						*self = Self::StateSyncStrategy(state_sync);
@@ -448,8 +457,8 @@ where
 						};
 						// Let `ChainSync` know about connected peers.
 						connected_peers.into_iter().for_each(
-							|(peer_id, best_hash, best_number)| {
-								chain_sync.add_peer(peer_id, best_hash, best_number)
+							|(peer_id, best_hash, best_number, is_synced)| {
+								chain_sync.add_peer(peer_id, best_hash, best_number, is_synced)
 							},
 						);
 
@@ -478,9 +487,11 @@ where
 					},
 				};
 				// Let `ChainSync` know about connected peers.
-				connected_peers.into_iter().for_each(|(peer_id, best_hash, best_number)| {
-					chain_sync.add_peer(peer_id, best_hash, best_number)
-				});
+				connected_peers.into_iter().for_each(
+					|(peer_id, best_hash, best_number, is_synced)| {
+						chain_sync.add_peer(peer_id, best_hash, best_number, is_synced)
+					},
+				);
 
 				*self = Self::ChainSyncStrategy(chain_sync);
 			},
