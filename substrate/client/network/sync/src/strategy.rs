@@ -45,7 +45,7 @@ use sp_runtime::{
 	Justifications,
 };
 use state::{StateStrategy, StateStrategyAction};
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 use warp::{EncodedProof, WarpProofRequest, WarpSync, WarpSyncAction, WarpSyncConfig};
 
 /// Corresponding `ChainSync` mode.
@@ -63,6 +63,8 @@ fn chain_sync_mode(sync_mode: SyncMode) -> ChainSyncMode {
 pub struct SyncingConfig {
 	/// Syncing mode.
 	pub mode: SyncMode,
+	/// Whether to pause Substrate sync
+	pub pause_sync: Arc<AtomicBool>,
 	/// The number of parallel downloads to guard against slow peers.
 	pub max_parallel_downloads: u32,
 	/// Maximum number of blocks to request.
@@ -127,6 +129,7 @@ where
 		} else {
 			Ok(Self::ChainSyncStrategy(ChainSync::new(
 				chain_sync_mode(config.mode),
+				config.pause_sync,
 				client.clone(),
 				config.max_parallel_downloads,
 				config.max_blocks_per_request,
@@ -431,6 +434,7 @@ where
 						);
 						let mut chain_sync = match ChainSync::new(
 							chain_sync_mode(config.mode),
+							config.pause_sync,
 							client,
 							config.max_parallel_downloads,
 							config.max_blocks_per_request,
@@ -461,6 +465,7 @@ where
 				}
 				let mut chain_sync = match ChainSync::new(
 					chain_sync_mode(config.mode),
+					config.pause_sync,
 					client,
 					config.max_parallel_downloads,
 					config.max_blocks_per_request,
